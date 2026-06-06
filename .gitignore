@@ -209,3 +209,6 @@ __marimo__/
 # Database file (too large)
 items.db
 test.py
+
+# Local Notes and Instructions
+INSTRUCTIONS.md
