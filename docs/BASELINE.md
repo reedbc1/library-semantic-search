@@ -1,5 +1,12 @@
 # Phase 1 Behavior and Database Baseline
 
+> Historical snapshot: this document intentionally describes the application
+> before phases 2 through 4. On 2026-08-23 the maintained code moved into the
+> `library_search` package and the live database migrated to schema version 2.
+> The legacy tables listed below were removed after a verified backup and
+> rehearsal; active table counts remained 20,326. See `ARCHITECTURE.md` for the
+> current design and runtime commands.
+
 ## Snapshot metadata
 
 This baseline was captured on 2026-08-23 before production refactoring began.

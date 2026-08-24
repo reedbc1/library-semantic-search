@@ -1,13 +1,44 @@
+import tempfile
 import unittest
-from unittest.mock import patch
+from pathlib import Path
 
-from flaskr import app
+from library_search.errors import SearchError
+from library_search.search import validate_query
+from library_search.web import create_app
+from tests.helpers import make_settings
 
 
-class WebCharacterizationTests(unittest.TestCase):
+class WebTests(unittest.TestCase):
     def setUp(self):
-        app.config.update(TESTING=True)
-        self.client = app.test_client()
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.settings = make_settings(Path(self.temporary_directory.name))
+        self.queries: list[str] = []
+
+        def fake_search(settings, query):
+            normalized = validate_query(query, settings)
+            self.queries.append(normalized)
+            return [
+                {
+                    "id": "bib-1",
+                    "title": "Test Title",
+                    "author": "Test Author",
+                    "publicationDate": "2024",
+                    "itemLanguage": "eng",
+                    "subjects": "Space",
+                    "summary": "Test Summary",
+                    "coverUrl": "https://example.test/cover.jpg",
+                }
+            ]
+
+        self.application = create_app(
+            self.settings,
+            search_function=fake_search,
+        )
+        self.application.config.update(TESTING=True)
+        self.client = self.application.test_client()
+
+    def tearDown(self):
+        self.temporary_directory.cleanup()
 
     def test_home_page_and_packaged_stylesheet_are_available(self):
         home_response = self.client.get("/")
@@ -20,54 +51,39 @@ class WebCharacterizationTests(unittest.TestCase):
         self.assertEqual(css_response.status_code, 200)
         self.assertIn(b".result-card", css_response.data)
 
-    def test_search_passes_query_through_and_renders_current_record_fields(self):
-        connection = object()
-        cursor = object()
-        rendered_records = [
-            {
-                "id": "bib-1",
-                "title": "Test Title",
-                "author": "Test Author",
-                "publicationDate": "2024",
-                "itemLanguage": "eng",
-                "subjects": "Space",
-                "summary": "Test Summary",
-                "coverUrl": "https://example.test/cover.jpg",
-            }
-        ]
-
-        with (
-            patch(
-                "flaskr.sync_db.create_con", return_value=(connection, cursor)
-            ) as create_connection,
-            patch("flaskr.sync_db.sim_search", return_value=[("raw",)]) as search,
-            patch(
-                "flaskr.sync_db.sql_to_json", return_value=rendered_records
-            ) as convert,
-        ):
-            response = self.client.get("/search?query=space+opera")
-            self.addCleanup(response.close)
+    def test_search_validates_normalizes_and_renders_records(self):
+        response = self.client.get("/search?query=+space+opera+")
+        self.addCleanup(response.close)
 
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.queries, ["space opera"])
         self.assertIn(b"Test Title", response.data)
-        self.assertIn(b"Test Author", response.data)
-        create_connection.assert_called_once_with()
-        search.assert_called_once_with(
-            connection, cursor, user_query="space opera"
+
+    def test_missing_and_blank_queries_return_bad_request(self):
+        missing_response = self.client.get("/search")
+        blank_response = self.client.get("/search?query=+++")
+        self.addCleanup(missing_response.close)
+        self.addCleanup(blank_response.close)
+
+        self.assertEqual(missing_response.status_code, 400)
+        self.assertEqual(blank_response.status_code, 400)
+
+    def test_application_failure_returns_service_unavailable(self):
+        def failing_search(settings, query):
+            raise SearchError("failed")
+
+        application = create_app(
+            self.settings,
+            search_function=failing_search,
         )
-        convert.assert_called_once_with(connection, cursor, [("raw",)])
+        application.config.update(TESTING=True)
 
-    def test_missing_search_query_uses_the_current_flask_default(self):
-        with (
-            patch("flaskr.sync_db.create_con", return_value=(object(), object())),
-            patch("flaskr.sync_db.sim_search", return_value=[]) as search,
-            patch("flaskr.sync_db.sql_to_json", return_value=[]),
-        ):
-            response = self.client.get("/search")
-            self.addCleanup(response.close)
+        with self.assertLogs("library_search.web", level="ERROR"):
+            response = application.test_client().get("/search?query=valid")
+        self.addCleanup(response.close)
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(search.call_args.kwargs["user_query"], "Flask")
+        self.assertEqual(response.status_code, 503)
+        self.assertNotIn(b"failed", response.data)
 
 
 if __name__ == "__main__":

@@ -25,9 +25,3 @@ exclude = [".venv"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I"]
-
-[tool.ruff.lint.per-file-ignores]
-# These known cleanup candidates are intentionally retained during the
-# characterization phase so Phase 1 does not change production behavior.
-"query.py" = ["F401"]
-"sync_db.py" = ["F841"]

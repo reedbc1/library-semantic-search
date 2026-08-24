@@ -1,572 +1,399 @@
-# FetchDVDs Architecture
+# Library Search Architecture
 
-## 1. Purpose and scope
+## Purpose and scope
 
-FetchDVDs is a small library-catalog similarity-search application. Despite the
-repository name, the current Vega query is configured for a specific collection
-of print books at a specific library location. The application has two principal
-jobs:
+This program maintains a local copy of a selected III Vega library catalog and
+provides semantic search over that copy. It has two independent runtime paths:
 
-1. Build and incrementally synchronize a local catalog from the public-facing
-   Vega discovery API.
-2. Let a user enter a natural-language query, embed that query with OpenAI, find
-   the nearest catalog embeddings in SQLite, and display the matching titles in
-   a Flask web page.
+- a scheduled synchronization path that fetches catalog data, creates missing
+  OpenAI embeddings, and updates SQLite; and
+- an online request path in which Gunicorn serves a Flask application that
+  embeds a user's query and searches the stored vectors.
 
-The codebase is a small monolith. Its web layer is organized as the importable
-`flaskr` package, while synchronization, integration, configuration, maintenance
-scripts, and the database remain at the repository root. There is no separate
-API tier, task queue, or migration framework. A Phase 1 characterization suite
-covers the current integration boundaries and core behavior.
+Both paths use the `library_search` package and the same `items.db` file. Schema
+changes are a separate operator action: normal synchronization and web requests
+validate the schema version but never migrate it implicitly.
 
-This document describes the code as it currently exists. Where older notes
-describe intended behavior that differs from the implementation, the behavior
-in the Python source is treated as authoritative.
+The application is a small monolith. There is no separate application server,
+job queue, cache, or database service. External dependencies are Vega, OpenAI,
+and the native sqliteai-vector extension.
 
-## 2. System context
+## System context
 
-The program has two independently started runtime paths. They share
-`items.db`, but otherwise perform different work.
+### Database synchronization path
 
-### 2.1 Database synchronization path
-
-Running `sync_db.py` fetches catalog data, updates the relational tables,
-rebuilds the searchable record table, and creates embeddings for new records.
-
-The path proceeds as follows:
-
-- `sync_db.py` opens the local `items.db` file and loads the sqliteai-vector
-  extension.
-- It calls `fetch_items.py` to retrieve bibliographic format-group records from
-  the III Vega API. New IDs are inserted into `bibs`, and IDs no longer returned
-  by Vega are deleted.
-- It reads edition IDs from `bibs`, fetches metadata for editions that are not
-  already stored, and synchronizes the `editions` table.
-- It drops and rebuilds `records` by joining `bibs` with `editions`. This
-  flattened table contains the catalog fields used by search and the web UI.
-- It compares IDs in `records` with IDs in `embeddings`. Embeddings without a
-  corresponding record are deleted.
-- For records without embeddings, it combines the catalog fields into text and
-  sends that text to the OpenAI Embeddings API using
-  `text-embedding-3-small`.
-- The returned 1,536-dimensional vectors are stored in `embeddings` and indexed
-  through sqliteai-vector.
-
-The resulting SQLite database is the handoff point between synchronization and
-the web application. Existing record IDs are treated as unchanged, so their
-metadata and embeddings are not refreshed when only their upstream content
-changes.
-
-### 2.2 Flask/Gunicorn web request path
-
-Gunicorn serves the Flask application. The `/` route only renders the initial
-search form. A `/search` request proceeds as follows:
-
-- The browser sends a GET request such as `/search?query=historical+fiction` to
-  Gunicorn, which is configured with four workers on port `8001`.
-- Gunicorn passes the request to the `/search` route in
-  `flaskr/__init__.py`.
-- Flask extracts the `query` parameter and opens `items.db` through
-  `sync_db.create_con`, which also loads the vector extension.
-- The query text is sent to the OpenAI Embeddings API using the same model used
-  for catalog records.
-- `sync_db.sim_search` compares the query vector with vectors in `embeddings`
-  and selects the 100 nearest record IDs.
-- SQLite joins those IDs to `records` and orders the rows by vector distance.
-- The rows are converted to dictionaries and passed to
-  `flaskr/templates/results.html`.
-- Jinja renders the result cards, `flaskr/static/style.css` supplies their
-  styling, and Gunicorn returns the completed HTML response to the browser.
-
-The web path reads the catalog and embeddings produced by synchronization. It
-does not contact Vega or update catalog records. It does make a new OpenAI API
-request for every search.
-
-## 3. Repository file map
-
-| Path | Role |
-| --- | --- |
-| `flaskr/` | Importable Flask web package containing the application module, Jinja templates, and static assets. |
-| `flaskr/__init__.py` | Creates the Flask application and defines its HTTP routes. It renders the search form and executes searches through `sync_db.py`. |
-| `flaskr/templates/index.html` | Jinja template for the landing page and search form. |
-| `flaskr/templates/results.html` | Jinja template for result cards, metadata, summaries, cover images, and links back to Vega catalog records. |
-| `flaskr/static/style.css` | Responsive styling for the landing page, fixed results header, search controls, and result cards. |
-| `sync_db.py` | Core application module. Owns SQLite/vector-extension setup, catalog synchronization, table derivation, embedding creation, vector search, and conversion of SQL rows for templates. It is also the main synchronization entry point. |
-| `fetch_items.py` | Asynchronous Vega API client and response parser. Fetches bibliographic format groups and edition metadata. It can also run alone as a fetch/count diagnostic. |
-| `query.py` | Manual database inspection and repair utilities. It contains destructive migration/deduplication helpers and is not part of normal web or sync execution. Its current main block prints edition-language counts. |
-| `embed.py` | Older standalone embedding experiment. The production embedding path is now in `sync_db.py`; this script is currently incompatible with the current `get_collection` signature. |
-| `gunicorn.conf.py` | Gunicorn settings: bind on all interfaces at port `8001`, use four workers, and send access logs to standard output. |
-| `pyproject.toml` | Project metadata, exact direct dependencies, supported Python version, and Ruff configuration. |
-| `requirements.txt` | Exact production dependency versions mirrored from `pyproject.toml` for the current deployment workflow. |
-| `Makefile` | Deterministic `test`, `lint`, and combined `check` commands. |
-| `tests/` | Offline characterization tests for Vega parsing, synchronization/database behavior, embeddings, vector ordering, Flask routes, and backup/restore. |
-| `tests/fakes.py` | Deterministic fake HTTP and OpenAI clients used to prevent tests from making external requests. |
-| `tests/fixtures/` | Saved representative Vega JSON responses. |
-| `scripts/database_backup.py` | Refuse-overwrite SQLite integrity, backup, and restore command-line utility. |
-| `docs/DATABASE_BACKUP.md` | Operator procedure for verified backup, test restore, and failure recovery. |
-| `docs/BASELINE.md` | Phase 1 snapshot of dependencies, schema, row relationships, and behavior protected by tests. |
-| `.env` | Local, ignored environment configuration. The current code expects `OPENAI_API_KEY`; its value must remain secret. |
-| `.gitignore` | Python-oriented ignore rules plus project rules for the large database, local documentation, virtual environments, logs, and test scratch files. |
-| `.codex` | Empty tracked repository metadata placeholder; it has no runtime role. |
-| `items.db` | Ignored runtime SQLite database. It contains catalog, derived record, embedding, and vector-extension tables. The file is opened by relative path, so the process working directory matters. |
-| `history.log` | Ignored runtime log written by `sync_db.py` through a relative-path `FileHandler`. |
-| `.venv/` | Ignored local Python virtual environment. It is development state, not application source. |
-| `README.md` | Short, ignored project overview and basic file map. |
-| `README_OLD.md` | Older, ignored overview that mentions combined semantic and keyword search; the current implementation performs semantic vector search only. |
-| `INSTRUCTIONS.md` | Ignored machine-specific operations notes for systemd, cron, and a planned Cloudflare tunnel. These external service definitions are not stored in this repository. |
-| `TODO.md` | Ignored backlog covering filters, language display, location display, query performance, and hosting. |
-| `ARCHITECTURE.md` | This architecture reference. |
-
-There is not yet a transitive dependency lockfile, CI workflow, container
-definition, or versioned database migration framework.
-
-## 4. Organization and module boundaries
-
-The program is organized into four informal layers:
-
-| Layer | Files | Responsibilities |
-| --- | --- | --- |
-| Presentation | `flaskr/` | HTTP routing, input extraction, HTML rendering, layout, and browser-facing links. |
-| Application/domain workflow | `sync_db.py` | Orchestrates synchronization and search; derives records and embedding input text. |
-| Integration | `fetch_items.py`, OpenAI calls in `sync_db.py` | Talks to Vega and OpenAI and adapts remote responses into local tuples/vectors. |
-| Persistence | SQLite calls in `sync_db.py` and `query.py` | Stores normalized and derived catalog data and invokes sqliteai-vector functions. |
-
-The boundaries are conventions rather than enforced interfaces. For example,
-`sync_db.py` mixes orchestration, SQL, OpenAI calls, logging, schema migration,
-and search logic. Functions accept raw SQLite connection/cursor objects and pass
-plain tuples, sets, lists, and dictionaries rather than domain objects.
-
-Imports form a simple dependency graph:
-
-```text
-flaskr/__init__.py -> sync_db.py ------> fetch_items.py
-query.py -------> sync_db.py
-embed.py -------> sync_db.py
-
-flaskr/templates/ and flaskr/static/ are loaded by Flask
-sync_db.py and fetch_items.py call external services directly
-```
-
-There are no circular imports.
-
-## 5. Data model
-
-### 5.1 Application tables
-
-SQLite columns are declared without explicit SQL types except for embedding
-BLOBs. SQLite therefore relies heavily on dynamic typing.
-
-| Table | Columns | Source and purpose |
-| --- | --- | --- |
-| `bibs` | `id` (primary key), `title`, `publicationDate`, `coverUrl`, `editionId` | One row per Vega format group. Holds the fields returned by the catalog search endpoint and points to the first edition exposed in the first material tab. |
-| `editions` | `id` (primary key), `author`, `itemLanguage`, `subjects`, `summary` | One row per fetched Vega edition. Multi-valued fields are flattened into comma-separated text. |
-| `records` | `id` (primary key), `title`, `author`, `publicationDate`, `itemLanguage`, `subjects`, `summary`, `coverUrl` | Rebuilt during every sync as an inner join of `bibs` and `editions`. This is the read model used by search and templates. |
-| `embeddings` | `id`, `embedding` (BLOB) | Maps a record ID to its OpenAI embedding. `ensure_embeddings_table` can create this table without a primary key and can migrate a legacy column named `BLOB` to `embedding`; the local database has separately been migrated to a primary-key version. |
-
-The logical relationships are:
-
-```mermaid
-erDiagram
-    BIBS }o--|| EDITIONS : "editionId -> id"
-    BIBS ||--o| RECORDS : "id"
-    EDITIONS ||--o| RECORDS : "joined metadata"
-    RECORDS ||--o| EMBEDDINGS : "id"
-
-    BIBS {
-        string id PK
-        string title
-        string publicationDate
-        string coverUrl
-        string editionId
-    }
-    EDITIONS {
-        string id PK
-        string author
-        string itemLanguage
-        string subjects
-        string summary
-    }
-    RECORDS {
-        string id PK
-        string title
-        string author
-        string publicationDate
-        string itemLanguage
-        string subjects
-        string summary
-        string coverUrl
-    }
-    EMBEDDINGS {
-        string id
-        blob embedding
-    }
-```
-
-The relationship is not enforced with SQLite foreign keys. `records` is a
-materialized read table, not a SQL view, and is dropped/recreated during sync.
-
-### 5.2 Vector-extension tables
-
-`create_con` loads the native `sqlite_vector` extension distributed by the
-`sqliteai-vector` Python package. Calls to `vector_init` and `vector_quantize`
-create or maintain extension-owned metadata and quantized-vector storage. In the
-current local database these include `_sqliteai_vector` and
-`vector0_embeddings_embedding`. Application code should treat these as internal
-implementation details and use the extension functions instead of editing them.
-
-### 5.3 Local database snapshot
-
-At the time this document was written, the ignored local `items.db` was roughly
-591 MiB and contained 20,326 rows in each of `bibs`, `editions`, `records`, and
-`embeddings`. It also contained legacy tables left by manual migrations in
-`query.py`. These values describe one workstation snapshot, not a guaranteed
-production state or schema invariant.
-
-## 6. Catalog synchronization
-
-Running `python sync_db.py` executes the following sequence:
-
-```text
-create_con
-  -> load sqliteai-vector extension
-  -> sync
-       -> bibs
-       -> editions
-       -> join_tables
-       -> sync_embeddings
-```
-
-### 6.1 Connection and startup behavior
-
-Importing `sync_db.py` loads `.env`, configures logging, opens `history.log`, and
-suppresses most `httpx` logs. `create_con` then:
-
-1. Opens `items.db` relative to the current working directory.
-2. Resolves the packaged native vector library with `importlib.resources`.
-3. Temporarily enables SQLite extension loading.
-4. Loads the vector library and disables further extension loading.
-5. Returns a raw `(connection, cursor)` tuple.
-
-The code does not configure WAL mode, busy timeouts, foreign keys, row factories,
-or explicit connection cleanup.
-
-### 6.2 Bibliographic synchronization
-
-`bibs` asks `fetch_items.fetch_all_bibs` for all matching catalog format groups.
-The fetcher divides the search into the year range 1-1999 and one request group
-per year from 2000 through the current year. For each range it first requests a
-page count, then schedules every page concurrently.
-
-The Vega search request is hard-coded to:
-
-- search text `*`;
-- sort by title ascending;
-- search type `everything`;
-- universal limiter `at_library`;
-- material type ID `1`;
-- location ID `59`;
-- page size 100;
-- `FormatGroup` resources;
-- the `slouc.na2.iiivega.com` customer/host domain.
-
-The response parser stores the format-group ID, title, publication date, medium
-cover URL, and the first edition ID found in the first material tab.
-
-Synchronization is ID-based:
-
-- API IDs missing locally are inserted.
-- Local IDs missing from the API response are deleted.
-- IDs present in both sets are counted as unchanged and are not updated.
-
-### 6.3 Edition synchronization
-
-`editions` compares the edition IDs referenced by `bibs` with IDs in the local
-`editions` table. Obsolete edition rows are deleted. New IDs are fetched in
-batches of up to 100, with at most five edition-fetch coroutines intended to be
-active at once.
-
-`fetch_edition` extracts:
-
-- authors, joined with commas;
-- item-language codes, joined with commas;
-- every edition field whose name starts with `subj`, flattened and joined;
-- summary notes, joined with commas.
-
-`get_lang` contains a small language-code mapping but is not called, so stored and
-displayed languages remain the raw values returned by Vega.
-
-### 6.4 Derived records table
-
-`join_tables` drops the previous `records` table, creates it again, and inserts an
-inner join between `bibs.editionId` and `editions.id`. A bibliographic row without
-a corresponding edition is therefore absent from the searchable read model.
-
-### 6.5 Embedding synchronization
-
-`sync_embeddings` compares IDs in `records` and `embeddings`:
-
-- embeddings without a record are deleted;
-- records without an embedding are converted to labeled text and embedded;
-- IDs in both tables are left unchanged.
-
-The embedding input is a concatenation of title, author, publication date,
-language, subjects, and summary. The fixed model is
-`text-embedding-3-small`. Embeddings are requested asynchronously in batches of
-up to 100, converted to a string representation, parsed by
-`vector_as_f32`, and stored as FLOAT32 BLOBs.
-
-The model currently produces 1,536 dimensions, which matches the dimension
-hard-coded in the search initialization. Changing the model or requested
-dimensions requires rebuilding stored embeddings and updating the search
-configuration together.
-
-The sync commits after several individual steps and each batch. It is not one
-atomic transaction, so a failure can leave a partially updated database that a
-later run must reconcile.
-
-## 7. Search request flow
-
-### 7.1 Routes
-
-`flaskr/__init__.py` exposes two GET routes:
-
-| Route | Behavior |
-| --- | --- |
-| `/` | Renders `flaskr/templates/index.html`, which contains a query form. |
-| `/search?query=...` | Reads `query` (defaulting to `Flask` if absent), performs semantic search, converts rows to dictionaries, and renders `flaskr/templates/results.html`. |
-
-### 7.2 Query processing
-
-For every `/search` request:
-
-1. `sync_db.create_con` opens the relative `items.db` and loads the vector
-   extension.
-2. `embed_query` sends the user text to OpenAI using
-   `text-embedding-3-small`.
-3. `sim_search` serializes the 1,536-element query vector as JSON.
-4. SQLite initializes the embeddings vector column and quantizes stored vectors.
-5. A connection-local temporary table named `nearest_neighbors` is recreated.
-6. `vector_quantize_scan` selects the 100 nearest embedding row IDs and their
-   distances.
-7. Those neighbors are joined to `records` and ordered by ascending distance.
-8. `sql_to_json` maps the record columns to dictionaries for Jinja.
-9. The result template displays the cover, title, author, publication date,
-   language, subjects, and expandable summary.
-
-The Vega record link is constructed from the format-group ID and opens in a new
-tab. Jinja's normal HTML autoescaping applies to template values.
-
-Although the older README describes a combination of semantic and keyword
-search, there is no keyword or full-text-search stage in the current query path.
-The returned vector distance is also discarded during dictionary conversion and
-is not shown to the user.
-
-## 8. Configuration and external dependencies
-
-### 8.1 Environment
-
-The OpenAI Python client discovers `OPENAI_API_KEY` from the environment after
-`python-dotenv` loads the repository's `.env` file. No other environment-based
-application settings are currently read.
-
-The following settings are hard-coded in source:
-
-- Vega URLs, domain headers, anonymous-user IDs, filters, and pagination;
-- the OpenAI model name and vector dimension;
-- `items.db` and `history.log` relative paths;
-- nearest-neighbor result count of 100;
-- request concurrency of five in the fetcher;
-- Gunicorn bind address, port, and worker count.
-
-### 8.2 Python and native dependencies
-
-The code requires a modern Python version; `int | None` syntax makes Python 3.10
-or later the practical minimum. The current virtual environment uses Python
-3.13.
-
-Direct runtime dependencies used by source are:
-
-- Flask and Gunicorn for web serving;
-- httpx for Vega HTTP requests;
-- openai for synchronous query embeddings and asynchronous catalog embeddings;
-- python-dotenv for `.env` loading;
-- sqliteai-vector for its packaged SQLite extension and vector SQL functions;
-- tqdm for asynchronous and batch progress reporting.
-
-`pyproject.toml` and `requirements.txt` pin the tested direct dependencies,
-including `tqdm`. The previously declared third-party `asyncio`, `requests`, and
-`sqlalchemy` packages are not direct application dependencies. There is still no
-transitive dependency lockfile, so a fresh installation can resolve different
-indirect dependency versions.
-
-### 8.3 Remote-service assumptions
-
-The program assumes that:
-
-- the unauthenticated Vega endpoints and browser-like request headers continue
-  to work and retain their current JSON shapes;
-- Vega IDs remain stable and edition metadata can be represented as flattened
-  strings;
-- the configured material/location IDs retain their meaning;
-- the OpenAI API key is valid and has quota;
-- `text-embedding-3-small` remains available and compatible with the stored
-  vectors;
-- outbound HTTPS is allowed from both batch and web processes.
-
-## 9. Deployment and operations
-
-The repository's Gunicorn configuration expects an invocation equivalent to:
+The installed cron entry runs `/home/reedbc1/scripts/sync_db.sh` at 08:00 and
+16:00 each day. That wrapper changes to the repository directory and executes:
 
 ```bash
-gunicorn --config gunicorn.conf.py
+.venv/bin/python -m library_search sync
 ```
 
-It binds to `0.0.0.0:8001` with four default synchronous workers. Local notes say
-a systemd unit named `simsearch.service` starts Gunicorn via a script outside the
-repository, and mention a Cloudflare tunnel. Those files are machine-local and
-cannot be validated from this repository.
+One synchronization run works as follows:
 
-The same notes say cron runs `fetch_items.py`; however, that module's main block
-only fetches catalog records and prints a count. A full database refresh requires
-running `sync_db.py`. The installed cron entry should therefore be checked before
-assuming unattended synchronization is active.
+- The command-line boundary loads and validates `Settings`, including the
+  database path, Vega parameters, concurrency and timeout values, embedding
+  settings, log path, and `OPENAI_API_KEY`.
+- `library_search.sync` starts one asyncio event loop for the complete run.
+- One `VegaClient` and one reusable asynchronous HTTP client fetch all matching
+  bibliographic pages. The client limits the actual HTTP operations with a
+  semaphore and applies a finite timeout.
+- Vega response parsers validate the response shape and create typed
+  `BibliographicRecord` objects. The repository compares their IDs with `bibs`,
+  inserting new IDs and deleting IDs no longer returned by Vega.
+- The repository compares edition IDs referenced by `bibs` with `editions`.
+  The Vega client fetches missing editions and parses them into typed
+  `EditionRecord` objects; obsolete editions are removed.
+- SQLite builds `records_new` from an inner join of `bibs` and `editions`, then
+  swaps it into place as `records` within the write transaction. Readers do not
+  observe a deliberately dropped table between commits.
+- The repository compares `records` IDs with `embeddings`. It removes orphaned
+  embeddings and prepares labeled text for records with no embedding.
+- One reusable `AsyncOpenAI` client creates missing embeddings in configured
+  batches. Every response is checked for exactly 1,536 finite numeric values
+  before it is stored.
+- sqliteai-vector converts the values to FLOAT32 BLOBs, initializes the vector
+  metadata, and updates the quantized search representation.
+- Each database stage owns its transaction and connection. Success commits,
+  failure rolls back that stage, and the connection is always closed.
 
-All processes that need the same database and log must start with the repository
-root as their working directory. Otherwise the relative paths may create or open
-a different `items.db` and `history.log`. The unused `DATABASE = '/items.db'`
-constant in `flaskr/__init__.py` does not control the active search connection.
+The ID-difference behavior intentionally preserves the pre-refactor semantics:
+an existing catalog ID is considered unchanged. Metadata changes for an
+existing ID do not update its stored row or regenerate its embedding.
 
-## 10. Assumptions and invariants
+### Flask behind Gunicorn path
 
-Correct behavior currently depends on these implicit invariants:
+The `simsearch.service` systemd unit runs
+`/home/reedbc1/scripts/simsearch.sh`. The wrapper changes to the repository and
+executes:
 
-- `bibs.id`, `editions.id`, `records.id`, and `embeddings.id` refer to the same
-  stable catalog identity chain expected by the join/diff logic.
-- Every searchable record has non-null string values for all fields concatenated
-  by `get_collection`; otherwise string concatenation can fail.
-- Stored embeddings and query embeddings use the same model and dimension.
-- The order of columns in `records` matches the dictionaries constructed by
-  `sql_to_json`.
-- SQLite was built with extension-loading support and can load the platform
-  binary packaged by `sqliteai-vector`.
-- Only one authoritative synchronization job modifies the database at a time.
-- The working directory contains a populated database before the web application
-  accepts searches.
-- Vega pagination treats the requested page range in the same way the current
-  `range(0, total_pages + 1)` logic expects.
-- A single format group's first material tab and first edition are the edition
-  intended for indexing.
+```bash
+.venv/bin/gunicorn --config gunicorn.conf.py
+```
 
-## 11. Limitations and risks
+`gunicorn.conf.py` tells Gunicorn to create the Flask application with
+`library_search.web:create_app()`, bind to `0.0.0.0:8001`, and start four
+synchronous workers.
 
-### 11.1 Data correctness and freshness
+The request path works as follows:
 
-- Existing IDs are never updated. A title, cover URL, publication date, author,
-  subject, language, or summary changed upstream remains stale until the local
-  row is removed/rebuilt manually.
-- Embeddings are refreshed only when an ID is absent. Metadata changes under the
-  same ID would not trigger re-embedding even if the relational update behavior
-  were improved.
-- `records` uses an inner join and silently excludes bibliographic records whose
-  edition row is missing.
-- Only the first edition from the first material tab is selected.
-- Language values are not normalized even though a partial mapping exists.
-- Subjects and summaries are flattened, losing their original structure.
-- The code relies on dynamically typed columns and does not enforce foreign keys.
-- The embedding text builder assumes non-null strings and contains the label
-  typo `lanugage`; the typo becomes part of every newly generated embedding
-  input.
+- `GET /` renders the search form. It does not access OpenAI or SQLite.
+- `GET /search?query=...` reads the decoded query string at the Flask boundary.
+  Missing, blank, or overlong input produces HTTP 400 without calling OpenAI.
+- `library_search.search` trims the query, creates one query embedding with the
+  synchronous OpenAI client, and validates its type, dimension, and values.
+- A managed SQLite connection loads the packaged vector extension, applies a
+  five-second busy timeout, and verifies that `PRAGMA user_version` is the
+  current application schema version.
+- sqliteai-vector scans the quantized `embeddings` data for the configured 100
+  nearest neighbors. Their IDs are joined to `records` and ordered by ascending
+  vector distance.
+- Search converts each SQLite row to one dictionary containing the eight
+  `records` fields. Vector distance is used for ordering but is not displayed.
+- Flask renders the Jinja result template and returns the HTML response.
+- A recognized application failure returns HTTP 503 and is logged; unexpected
+  exception details are not returned to the browser.
 
-### 11.2 Error handling and recovery
+The online path never contacts Vega and never changes catalog content. It does
+run vector initialization/quantization SQL while preparing a search, so the
+search connection is treated as a write-capable transaction.
 
-- Vega calls use `timeout=None`, have no retries/backoff, and call
-  `raise_for_status`; one failed coroutine can abort a batch.
-- A new `httpx.AsyncClient` is created for each request, preventing connection
-  pooling across calls.
-- In `fetch_bibs`, the semaphore is released before the HTTP request, so the
-  intended five-request limit does not actually bound bibliographic page
-  requests.
-- Sync uses many commits rather than an atomic transaction. Failures can expose a
-  partially rebuilt catalog.
-- SQL `IN` clauses are built by interpolating Python tuples in several places.
-  Singleton tuples can produce invalid SQL, and parameterization is inconsistent.
-- A brand-new database can fail in `sync_embeddings` because it queries
-  `embeddings` before ensuring that the table exists.
-- Connections created during sync and request handling are generally not closed
-  explicitly. `get_embeddings` also opens an unused connection.
-- There is no structured error page, health check, or degraded behavior when
-  OpenAI, Vega, SQLite, or the extension fails.
+## Package organization
 
-### 11.3 Search quality and performance
+The source is organized by responsibility under one domain package:
 
-- Search is semantic-only; there is no exact, keyword, phrase, spelling, filter,
-  or hybrid ranker.
-- The result count is fixed at 100 and users cannot paginate or filter it.
-- Every query incurs an external OpenAI request, adding latency and cost.
-- Vector initialization and quantization are invoked on every search request;
-  doing this once during indexing would likely be more efficient.
-- The query path is synchronous from Flask's perspective, so each worker remains
-  occupied while waiting for OpenAI and SQLite.
-- Four Gunicorn workers share one SQLite file. Concurrent reads plus sync-time
-  writes may cause locking or inconsistent availability because WAL/busy-timeout
-  behavior is not configured.
-- There is no query/result cache or precomputed query normalization.
+```text
+library_search/
+    __init__.py
+    __main__.py
+    config.py
+    db.py
+    embeddings.py
+    errors.py
+    models.py
+    search.py
+    sync.py
+    vega.py
+    web/
+        __init__.py
+        static/
+            style.css
+        templates/
+            index.html
+            results.html
+```
 
-### 11.4 Security and abuse resistance
+Dependencies point inward through explicit interfaces:
 
-- The web application has no authentication, authorization, rate limiting,
-  request-size limit, or usage quota. If exposed publicly, arbitrary users can
-  consume OpenAI API quota.
-- Vega browser headers and anonymous identifiers are hard-coded and may be
-  brittle or inappropriate for long-term server integration.
-- Several maintenance helpers in `query.py` interpolate table names/ID tuples
-  and perform destructive schema changes. They should only be run with trusted
-  inputs and a database backup.
-- The service binds to all network interfaces. Network exposure must be
-  controlled by the host firewall, reverse proxy, or tunnel configuration.
-- Secrets are correctly excluded through `.gitignore`, but there is no documented
-  key rotation or secret-management mechanism beyond `.env`.
+- `web` calls `search` and renders templates.
+- `sync` coordinates `vega`, `embeddings`, and the repository in `db`.
+- `search` calls `embeddings` validation and database/vector helpers.
+- `vega` and `db` produce or consume the typed records in `models`.
+- All runtime modules use `Settings` from `config` and expected exception types
+  from `errors`.
 
-### 11.5 Maintainability and observability
+Configuration loading, logging setup, network calls, and database connections
+do not occur merely because a module is imported. They occur at executable or
+service boundaries, which keeps unit tests isolated and avoids worker import
+side effects.
 
-- `sync_db.py` combines too many responsibilities and has no typed repository or
-  service interfaces.
-- `embed.py` is stale and does not run with the current `get_collection` API.
-- `flaskr/__init__.py` defines an unused Flask `g` connection helper and an
-  unused absolute database path; the actual search connection bypasses teardown
-  cleanup.
-- `sim_search` converts its rows to JSON-like dictionaries and discards that
-  value, after which `flaskr/__init__.py` performs the same conversion again.
-- `sql_to_json` prints schema column names on every request.
-- Logging configuration happens at import time and can add file handlers in
-  worker processes. Logs are plain text with no rotation configured in source.
-- The Phase 1 suite provides offline characterization tests, saved API fixtures,
-  real in-memory vector-search coverage, Ruff checks, and backup/restore tests.
-  It does not yet cover a complete synchronization run, production-scale
-  concurrency, or versioned schema migrations, and there is no CI gate.
-- Runtime and deployment documentation is partly ignored by Git, so it may not
-  travel with the source or remain consistent across hosts.
+## Repository file map
 
-## 12. Safe extension points
+| Path | Responsibility |
+| --- | --- |
+| `library_search/__init__.py` | Marks the domain package and exposes package metadata. |
+| `library_search/__main__.py` | CLI entry point for `sync`, `migrate`, and `database-info`. |
+| `library_search/config.py` | Immutable typed settings, `.env` loading at boundaries, absolute path resolution, and configuration validation. |
+| `library_search/errors.py` | Small application exception hierarchy for configuration, input, Vega, embeddings, persistence, migration, and search failures. |
+| `library_search/models.py` | Immutable bibliographic, edition, embedding-input, and ID-change dataclasses passed between layers. |
+| `library_search/vega.py` | Reusable asynchronous Vega HTTP client, concurrency control, finite timeouts, pagination, and response parsing. |
+| `library_search/embeddings.py` | Catalog/query embedding calls and dimension/finite-number validation. |
+| `library_search/db.py` | Vector-enabled SQLite connections, transaction context manager, schema definitions, versioned migrations, database inventory, ID diffs, and `CatalogRepository`. |
+| `library_search/sync.py` | High-level asynchronous synchronization stages and executable logging setup. |
+| `library_search/search.py` | Query validation, vector-index preparation, nearest-neighbor SQL, and result conversion. |
+| `library_search/web/__init__.py` | Flask application factory and the `/` and `/search` routes. |
+| `library_search/web/templates/` | Landing-page and result-page Jinja templates. |
+| `library_search/web/static/style.css` | Browser styling served by Flask. |
+| `gunicorn.conf.py` | Factory import, port 8001, four workers, and access-log configuration. |
+| `pyproject.toml` | Project metadata, Python compatibility, exact direct dependencies, and Ruff configuration. |
+| `requirements.txt` | Exact production dependencies used by the existing host workflow. |
+| `Makefile` | Deterministic `test`, `lint`, and `check` commands. |
+| `scripts/database_backup.py` | Verified SQLite backup, restore, and integrity-check CLI that refuses overwrites. |
+| `tests/` | Offline unit, integration, migration, vector-extension, complete fake-client synchronization, Flask, and project-configuration tests. |
+| `tests/fixtures/` | Representative Vega responses used without network access. |
+| `docs/BASELINE.md` | Historical pre-refactor Phase 1 behavior and schema snapshot. |
+| `docs/DATABASE_BACKUP.md` | Operator backup, restore, and recovery procedure. |
+| `ARCHITECTURE.md` | Current system and code architecture. |
+| `IMPROVEMENTS.md` | Cleanup plan and phase status; intentionally listed in `.gitignore` per local policy. |
+| `.env` | Ignored local secrets and optional settings overrides. |
+| `items.db` | Ignored runtime SQLite database shared by synchronization and search. |
+| `history.log` | Ignored synchronization log file. |
 
-Future changes are easiest to reason about if they preserve these boundaries:
+The obsolete root modules `sync_db.py`, `fetch_items.py`, `embed.py`, and
+`query.py` have been removed. Their maintained responsibilities now live in the
+package. The old `flaskr` package and stale `README_OLD.md` have also been
+removed. Deployment wrappers outside the repository now call the package entry
+points directly; no compatibility modules remain.
 
-- Put Vega request/response changes in `fetch_items.py`, ideally behind one
-  reusable `AsyncClient` and explicit retry/timeout policy.
-- Keep schema creation and migrations separate from routine synchronization, and
-  add a versioned migration mechanism before changing table layouts.
-- Treat `records` as a deliberate read model and rebuild embeddings whenever the
-  canonical embedding text changes, not only when IDs change.
-- Move OpenAI/vector operations behind a small search/index service so model,
-  dimensions, batching, and retry behavior are configured in one place.
-- Add filters to parameterized SQL over `records` before or after vector
-  candidate selection, depending on whether filter-first recall is required.
-- Centralize application settings for paths, Vega filters, model, dimensions,
-  result count, and concurrency in environment-backed configuration.
-- Expand the existing fake-client and temporary-database tests to cover a full
-  synchronization transaction and future versioned migrations.
+## Configuration
 
-Any schema or embedding-input change should be treated as an index migration:
-create or update relational data, rebuild all affected embeddings with one model
-configuration, initialize/quantize the vector index, validate counts, and only
-then expose the updated database to web workers.
+`Settings.from_env()` resolves paths relative to the repository root, not the
+process working directory. This prevents cron, systemd, Flask, and shell runs
+from silently opening different database files.
+
+Important environment variables and defaults are:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `DATABASE_PATH` | `items.db` | SQLite file; relative values resolve under the project root. |
+| `LOG_PATH` | `history.log` | Synchronization log path. |
+| `OPENAI_API_KEY` | none | Required for synchronization and real web search. |
+| `VEGA_BASE_URL` | `https://na2.iiivega.com/api` | Vega API root. |
+| `VEGA_CUSTOMER_DOMAIN` | `slouc.na2.iiivega.com` | Vega customer and host headers. |
+| `VEGA_SEARCH_TEXT` | `*` | Catalog search text. |
+| `VEGA_MATERIAL_TYPE_ID` | `1` | Selected material type. |
+| `VEGA_LOCATION_ID` | `59` | Selected location. |
+| `VEGA_LIMITER_ID` | `at_library` | Vega universal limiter. |
+| `VEGA_PAGE_SIZE` | `100` | Bibliographic page and edition batch size. |
+| `REQUEST_CONCURRENCY` | `5` | Maximum concurrent Vega requests. |
+| `REQUEST_TIMEOUT_SECONDS` | `60` | Timeout for Vega HTTP operations. |
+| `EMBEDDING_MODEL` | `text-embedding-3-small` | Model used for records and queries. |
+| `EMBEDDING_DIMENSION` | `1536` | Required stored and query vector dimension. |
+| `EMBEDDING_BATCH_SIZE` | `100` | Number of concurrently requested record embeddings per batch. |
+| `SEARCH_RESULT_COUNT` | `100` | Nearest neighbors returned to the template. |
+| `MAXIMUM_QUERY_LENGTH` | `1000` | Largest accepted search query in characters. |
+| `LOG_LEVEL` | `INFO` | Synchronization logging threshold. |
+
+Numeric settings must be positive, log levels must be recognized, required
+strings must be nonblank, and Vega's base URL must be HTTP(S). Secrets stay in
+the environment and are not logged.
+
+## Database model and migrations
+
+### Application tables
+
+The current schema is version 2 in `PRAGMA user_version`:
+
+| Table | Columns | Role |
+| --- | --- | --- |
+| `bibs` | `id` PK, `title`, `publicationDate`, `coverUrl` nullable, `editionId` | Vega format-group fields and selected edition reference. |
+| `editions` | `id` PK, `author`, `itemLanguage`, `subjects`, `summary` | Flattened metadata for fetched editions. |
+| `records` | `id` PK, `title`, `author`, `publicationDate`, `itemLanguage`, `subjects`, `summary`, `coverUrl` nullable | Search/UI read model produced by joining `bibs` and `editions`. |
+| `embeddings` | `id` PK, `embedding` BLOB | One FLOAT32 vector per searchable record. |
+
+Fresh databases use explicit SQLite types, primary keys, and `NOT NULL`
+constraints for required values. The migrated live database retained its
+compatible pre-refactor table definitions, whose non-ID text columns have no
+declared affinity or `NOT NULL` constraint; migration 1 validated the column
+order, primary keys, and current required values rather than rebuilding four
+large active tables. `coverUrl` remains logically nullable because the verified
+live data contains 12 records without a cover. The relationships are not
+declared as foreign keys because synchronization computes diffs in separate
+stages and `records` is replaced as a derived read model.
+
+### Extension-owned tables
+
+`_sqliteai_vector` and `vector0_embeddings_embedding` are owned by
+sqliteai-vector. Application migrations preserve them, and operators must not
+edit or remove them as ordinary application tables.
+
+### Version history
+
+- Version 1 creates a constrained schema for a fresh database or safely adopts
+  the compatible pre-refactor tables without rewriting them. It also normalizes
+  the old `embeddings.BLOB` column form if encountered. Required table shape,
+  primary keys, and current non-null data are checked before completion.
+- Version 2 drops only the verified leftovers `bibs_legacy`,
+  `editions_legacy`, and `embeddings_legacy`.
+
+Each migration runs in its own `BEGIN IMMEDIATE` transaction. A failure rolls
+back that migration and preserves the previous committed schema version. A
+database newer than the code is rejected. Run migrations explicitly:
+
+```bash
+.venv/bin/python -m library_search migrate
+```
+
+Both synchronization and search call `require_current_schema`; neither tries to
+repair a database during normal traffic.
+
+### Live Phase 4 migration
+
+On 2026-08-23 the live database was backed up, rehearsed on a copy, migrated to
+version 2 with the service stopped, and then verified. It retained 20,326 rows
+in each application table, preserved both vector tables, passed SQLite's
+integrity check, and returned the source record first for an exact stored-vector
+search. The migration intentionally did not run `VACUUM`; dropping tables does
+not necessarily reduce the file size, and vacuuming a database this large needs
+additional temporary disk space and a separate maintenance window.
+
+## Validation and failure behavior
+
+Validation occurs where loosely typed data enters a trusted layer:
+
+- configuration errors fail before work begins;
+- bad Flask query input returns HTTP 400 before an OpenAI call;
+- Vega transport failures, non-object JSON, malformed pagination, missing IDs,
+  and invalid nested field shapes become `VegaError` failures;
+- typed records establish the representation passed into persistence;
+- OpenAI embeddings must be a list or tuple of the configured number of finite
+  numeric values;
+- schema version, table order/columns, primary keys, and required stored values
+  are checked during migrations; routine operation also checks schema version
+  and table shape;
+- database writes use placeholders for values, including variable-size ID
+  lists, and service-level context managers own commit/rollback/close behavior.
+
+The sync command exits nonzero when an exception escapes. The web layer returns
+503 for expected application failures and logs the causal stack on the host.
+There is no automatic retry policy at present.
+
+## Testing and verification
+
+The test suite is network-free and does not require an API key. It uses saved
+Vega fixtures, fake HTTP/OpenAI clients, temporary SQLite databases, and the
+real locally installed sqliteai-vector extension.
+
+Coverage includes:
+
+- settings defaults, path resolution, and invalid environment values;
+- Vega request parameters, parsing, pagination, invalid response shapes,
+  client reuse, and concurrency;
+- embedding input compatibility and response validation;
+- schema creation/adoption, ordered migrations, legacy deletion, new-version
+  refusal, migration/connection rollback behavior, parameterized repository
+  operations, and vector search ordering;
+- complete synchronization with fake external clients;
+- query validation, result conversion, and managed search resources;
+- Flask routes, templates, static files, HTTP 400, and HTTP 503 behavior;
+- backup/restore integrity and refuse-overwrite safeguards;
+- import sorting, project metadata, Flask factory discovery, and Gunicorn
+  factory configuration.
+
+Run the local gate with:
+
+```bash
+make check
+```
+
+## Operational assumptions
+
+Correct operation assumes:
+
+- Vega's unauthenticated endpoints, headers, and JSON structure remain
+  compatible with the parser;
+- configured Vega material, location, and limiter IDs retain their meanings;
+- Vega IDs are stable and the first edition in the first material tab is the
+  desired edition;
+- OpenAI credentials have access and quota, and record/query vectors use the
+  same model and dimension;
+- the host's Python and packaged sqliteai-vector binary support extension
+  loading;
+- one authoritative sync job writes at a time;
+- operators stop Gunicorn and sync jobs before schema maintenance;
+- the systemd and cron wrappers outside the repository continue to point to
+  `/home/reedbc1/Repos/fetchdvds` until the separate Phase 5 rename;
+- backups are stored outside Git and retained until a post-migration sync and
+  production verification cycle have succeeded.
+
+## Known limitations
+
+### Catalog freshness
+
+- ID-based synchronization inserts and deletes but does not update an existing
+  ID whose metadata changed upstream.
+- Existing embeddings are not regenerated when upstream fields change under
+  the same ID.
+- Only the first edition from the first material tab is indexed.
+- Multi-valued fields are flattened into comma-separated strings.
+- The embedding input retains the historical `lanugage` label typo to avoid an
+  unplanned full re-embedding during behavior-preserving refactoring.
+- `records` is an inner join, so a bibliographic item without a stored edition
+  is not searchable.
+
+### Reliability and operation
+
+- Synchronization uses transactions per stage, not a single transaction across
+  all remote calls and database changes. A later-stage failure leaves earlier
+  committed stages for the next run to reconcile.
+- Vega and OpenAI calls have no retry/backoff policy.
+- The web process has no health endpoint or richer operator-facing error page.
+- Gunicorn workers and the scheduled synchronizer share one SQLite file. A busy
+  timeout helps with short contention, but WAL mode is not currently enabled.
+- Vector initialization and quantization are invoked for each search as well as
+  after synchronization.
+- `history.log` has no rotation configured in this repository.
+
+### Search and exposure
+
+- Search is semantic-only, fixed at 100 results, and has no pagination, filter,
+  cache, or keyword fallback.
+- Every valid search performs a paid external OpenAI request and occupies a
+  synchronous Gunicorn worker while it waits.
+- The application has no authentication, rate limiting, or request quota. Host
+  firewall/reverse-proxy/tunnel policy controls exposure of port 8001.
+- The result template does not expose similarity distance.
+
+### Project state
+
+- Exact direct dependencies are pinned, but transitive dependencies are not
+  locked and there is no CI workflow.
+- The distribution name and checkout directory still use `fetchdvds`; renaming
+  them is Phase 5 and was intentionally excluded from phases 2–4.
+- The migration backup made during Phase 4 is in `/tmp` and is not a durable
+  long-term backup location. Operators should copy it to durable storage before
+  relying on it for recovery.
+
+## Safe change points
+
+- Change Vega protocol details and parsing in `vega.py`, extending fixture-based
+  tests before modifying sync orchestration.
+- Add schema changes as ordered migrations in `db.py`; never restore import-time
+  or request-time schema guessing.
+- Treat any change to embedding text, model, or dimension as a controlled full
+  index migration.
+- Keep web request handling thin and place search behavior in `search.py`.
+- Keep transaction ownership at operation boundaries and repository methods
+  focused on persistence.
+- Update both external host wrappers, systemd/cron references, configuration,
+  and documentation together during the Phase 5 repository rename.

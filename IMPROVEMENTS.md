@@ -13,12 +13,33 @@ repository naming. They do not implement any of those changes.
 
 ### Implementation status
 
-Phase 1 was implemented on 2026-08-23. The repository now has offline
-characterization tests and external-client fakes, tested SQLite backup/restore
-tooling and operator documentation, pinned direct dependencies and Ruff
-configuration, deterministic `make test`/`make check` commands, and a captured
-schema and behavior baseline in `docs/BASELINE.md`. Production behavior was not
-changed.
+Phases 1 through 4 were implemented on 2026-08-23. Phase 5, the operational
+repository rename, remains deliberately pending.
+
+- Phase 1 added offline characterization tests and external-client fakes,
+  tested SQLite backup/restore tooling and operator documentation, pinned
+  direct dependencies and Ruff configuration, deterministic
+  `make test`/`make check` commands, and the historical baseline in
+  `docs/BASELINE.md`.
+- Phase 2 moved maintained source into the `library_search` package, introduced
+  typed and validated settings with absolute paths, added a Flask application
+  factory, moved its templates/static assets into `library_search.web`, and
+  changed Gunicorn and the installed host wrappers to package entry points.
+- Phase 3 separated Vega, synchronization, embedding, search, database, models,
+  errors, configuration, CLI, and web responsibilities. Database connections,
+  transactions, HTTP/OpenAI clients, and the one outer asyncio event loop now
+  have explicit owners. Input, remote response, embedding, schema, and request
+  boundaries are validated.
+- Phase 4 added transactional `PRAGMA user_version` migrations, rehearsed the
+  legacy-table cleanup on a verified backup copy, migrated the live database to
+  schema version 2, retained 20,326 rows in each active table and the two
+  extension-owned vector tables, and removed obsolete root modules, the old
+  Flask package, stale documentation, duplicate conversions, and unused code.
+
+The live service was restarted after migration and returned HTTP 200 through
+the new Gunicorn application-factory configuration. The complete offline gate
+contains 31 passing tests. `ARCHITECTURE.md` describes the current state;
+`docs/BASELINE.md` remains an intentionally historical pre-refactor snapshot.
 
 ## 2. Scope and non-goals
 
