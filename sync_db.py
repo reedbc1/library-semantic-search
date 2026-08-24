@@ -2,17 +2,19 @@
 # Imports
 ######################################################################
 
-import sqlite3
-import importlib.resources
-import fetch_items
-import logging
 import asyncio
+import importlib.resources
 import json
-from openai import OpenAI, AsyncOpenAI
-from dotenv import load_dotenv
-import tqdm.asyncio
-import tqdm
+import logging
+import sqlite3
 from datetime import datetime
+
+import tqdm
+import tqdm.asyncio
+from dotenv import load_dotenv
+from openai import AsyncOpenAI, OpenAI
+
+import fetch_items
 
 load_dotenv()
 
