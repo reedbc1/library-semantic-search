@@ -1,4 +1,5 @@
 import sqlite3
+
 import sync_db
 
 con = sqlite3.connect("items.db")

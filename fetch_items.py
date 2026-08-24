@@ -1,10 +1,11 @@
+import asyncio
 import logging
 import re
-import asyncio
-import httpx
 from dataclasses import dataclass
-from tqdm.asyncio import tqdm
 from datetime import date
+
+import httpx
+from tqdm.asyncio import tqdm
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -208,4 +209,3 @@ if __name__ == "__main__":
     all_bibs, all_ids = asyncio.run(fetch_all_bibs())
     print(len(all_ids))
     # result = asyncio.run(fetch_all_editions({"5dea2497-dff9-11ed-8960-5526fbe53189"}))
-    

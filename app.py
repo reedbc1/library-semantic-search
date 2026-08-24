@@ -1,6 +1,7 @@
-from flask import Flask, render_template, g, request
-
 import sqlite3
+
+from flask import Flask, g, render_template, request
+
 import sync_db
 
 app = Flask(__name__)

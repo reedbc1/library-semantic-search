@@ -1,8 +1,10 @@
-from openai import AsyncOpenAI
-from dotenv import load_dotenv
-from sync_db import create_con, get_collection
-from tqdm.asyncio import tqdm
 import asyncio
+
+from dotenv import load_dotenv
+from openai import AsyncOpenAI
+from tqdm.asyncio import tqdm
+
+from sync_db import create_con, get_collection
 
 load_dotenv()
 
