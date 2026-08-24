@@ -1,3 +1,5 @@
+"""Flask web application package."""
+
 import sqlite3
 
 from flask import Flask, g, render_template, request
