@@ -16,7 +16,8 @@ jobs:
 The codebase is a small monolith. Its web layer is organized as the importable
 `flaskr` package, while synchronization, integration, configuration, maintenance
 scripts, and the database remain at the repository root. There is no separate
-API tier, task queue, migration framework, or test suite.
+API tier, task queue, or migration framework. A Phase 1 characterization suite
+covers the current integration boundaries and core behavior.
 
 This document describes the code as it currently exists. Where older notes
 describe intended behavior that differs from the implementation, the behavior
@@ -95,7 +96,15 @@ request for every search.
 | `query.py` | Manual database inspection and repair utilities. It contains destructive migration/deduplication helpers and is not part of normal web or sync execution. Its current main block prints edition-language counts. |
 | `embed.py` | Older standalone embedding experiment. The production embedding path is now in `sync_db.py`; this script is currently incompatible with the current `get_collection` signature. |
 | `gunicorn.conf.py` | Gunicorn settings: bind on all interfaces at port `8001`, use four workers, and send access logs to standard output. |
-| `requirements.txt` | Unpinned dependency list. It includes several unused or unnecessary direct dependencies and omits the directly imported `tqdm` package. |
+| `pyproject.toml` | Project metadata, exact direct dependencies, supported Python version, and Ruff configuration. |
+| `requirements.txt` | Exact production dependency versions mirrored from `pyproject.toml` for the current deployment workflow. |
+| `Makefile` | Deterministic `test`, `lint`, and combined `check` commands. |
+| `tests/` | Offline characterization tests for Vega parsing, synchronization/database behavior, embeddings, vector ordering, Flask routes, and backup/restore. |
+| `tests/fakes.py` | Deterministic fake HTTP and OpenAI clients used to prevent tests from making external requests. |
+| `tests/fixtures/` | Saved representative Vega JSON responses. |
+| `scripts/database_backup.py` | Refuse-overwrite SQLite integrity, backup, and restore command-line utility. |
+| `docs/DATABASE_BACKUP.md` | Operator procedure for verified backup, test restore, and failure recovery. |
+| `docs/BASELINE.md` | Phase 1 snapshot of dependencies, schema, row relationships, and behavior protected by tests. |
 | `.env` | Local, ignored environment configuration. The current code expects `OPENAI_API_KEY`; its value must remain secret. |
 | `.gitignore` | Python-oriented ignore rules plus project rules for the large database, local documentation, virtual environments, logs, and test scratch files. |
 | `.codex` | Empty tracked repository metadata placeholder; it has no runtime role. |
@@ -108,9 +117,8 @@ request for every search.
 | `TODO.md` | Ignored backlog covering filters, language display, location display, query performance, and hosting. |
 | `ARCHITECTURE.md` | This architecture reference. |
 
-No automated tests, package metadata (`pyproject.toml`/`setup.py`), dependency
-lockfile, CI workflow, container definition, or database migration files are
-present.
+There is not yet a transitive dependency lockfile, CI workflow, container
+definition, or versioned database migration framework.
 
 ## 4. Organization and module boundaries
 
@@ -385,10 +393,11 @@ Direct runtime dependencies used by source are:
 - sqliteai-vector for its packaged SQLite extension and vector SQL functions;
 - tqdm for asynchronous and batch progress reporting.
 
-`requirements.txt` is not a reproducible environment definition: versions are
-unpinned, `tqdm` is not declared directly, the separate `asyncio` distribution is
-unnecessary on modern Python, and `requests` and `sqlalchemy` are not imported by
-the application. There is no lockfile.
+`pyproject.toml` and `requirements.txt` pin the tested direct dependencies,
+including `tqdm`. The previously declared third-party `asyncio`, `requests`, and
+`sqlalchemy` packages are not direct application dependencies. There is still no
+transitive dependency lockfile, so a fresh installation can resolve different
+indirect dependency versions.
 
 ### 8.3 Remote-service assumptions
 
@@ -531,8 +540,10 @@ Correct behavior currently depends on these implicit invariants:
 - `sql_to_json` prints schema column names on every request.
 - Logging configuration happens at import time and can add file handlers in
   worker processes. Logs are plain text with no rotation configured in source.
-- There are no automated tests, static checks, migrations, API fixtures, or CI
-  gates to detect remote-schema and data-migration regressions.
+- The Phase 1 suite provides offline characterization tests, saved API fixtures,
+  real in-memory vector-search coverage, Ruff checks, and backup/restore tests.
+  It does not yet cover a complete synchronization run, production-scale
+  concurrency, or versioned schema migrations, and there is no CI gate.
 - Runtime and deployment documentation is partly ignored by Git, so it may not
   travel with the source or remain consistent across hosts.
 
@@ -552,9 +563,8 @@ Future changes are easiest to reason about if they preserve these boundaries:
   candidate selection, depending on whether filter-first recall is required.
 - Centralize application settings for paths, Vega filters, model, dimensions,
   result count, and concurrency in environment-backed configuration.
-- Add integration tests with recorded Vega/OpenAI responses and a temporary
-  SQLite database; native vector-search tests should verify that stored and query
-  dimensions match.
+- Expand the existing fake-client and temporary-database tests to cover a full
+  synchronization transaction and future versioned migrations.
 
 Any schema or embedding-input change should be treated as an index migration:
 create or update relational data, rebuild all affected embeddings with one model

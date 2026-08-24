@@ -1,0 +1,22 @@
+{
+  "totalPages": 0,
+  "data": [
+    {
+      "id": "bib-1",
+      "title": "The Long Way to a Small, Angry Planet",
+      "publicationDate": "2014",
+      "coverUrl": {
+        "medium": "https://example.test/covers/bib-1.jpg"
+      },
+      "materialTabs": [
+        {
+          "editions": [
+            {
+              "id": "edition-1"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
