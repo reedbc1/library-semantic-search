@@ -158,6 +158,7 @@ side effects.
 | `pyproject.toml` | Project metadata, Python compatibility, exact direct dependencies, and Ruff configuration. |
 | `requirements.txt` | Exact production dependencies used by the existing host workflow. |
 | `Makefile` | Deterministic `test`, `lint`, and `check` commands. |
+| `README.md` | Installation, configuration, usage, development, and deployment guide. |
 | `scripts/database_backup.py` | Verified SQLite backup, restore, and integrity-check CLI that refuses overwrites. |
 | `tests/` | Offline unit, integration, migration, vector-extension, complete fake-client synchronization, Flask, and project-configuration tests. |
 | `tests/fixtures/` | Representative Vega responses used without network access. |
