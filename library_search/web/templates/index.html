@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+    <title>WR Semantic Search</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="search-page">
+    <h1>WR Semantic Search</h1>
+    <div class="search-container">
+        <form action="/search">
+            <input type="text" id="search" name="query" placeholder="Search">
+            <input type="submit" value="Search">
+        </form>
+    </div>
+</body>
+</html>

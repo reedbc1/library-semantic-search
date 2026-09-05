@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+    <title>WR Semantic Search</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="results-page">
+    <header class="site-header">
+        <a class="brand" href="/">WR Semantic Search</a>
+        <form class="header-search" action="/search">
+            <input
+                type="text"
+                id="header-search"
+                name="query"
+                placeholder="Search"
+                value="{{ request.args.get('query', '') }}"
+            >
+            <input type="submit" value="Search">
+        </form>
+    </header>
+
+    <main class="results-container">
+        <h1>Search Results</h1>
+
+        {% if results %}
+            <div id="results" class="results-list">
+            {% for record in results %}
+                <article class="result-card">
+                    <img
+                        class="book-cover"
+                        src="{{ record.coverUrl }}"
+                        alt="Cover of {{ record.title }}"
+                    >
+                    <div class="result-details">
+                        <h2>
+                            <a
+                                href="https://slouc.na2.iiivega.com/search/card?id={{ record.id | urlencode }}&entityType=FormatGroup"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                            >
+                                {{ record.title }}
+                            </a>
+                        </h2>
+                        <p class="result-meta">
+                            <span>{{ record.author }}</span>
+                            <span>{{ record.publicationDate }}</span>
+                            <span>{{ record.itemLanguage }}</span>
+                        </p>
+                        <p><strong>Subjects:</strong> {{ record.subjects }}</p>
+                        <details class="result-summary">
+                            <summary>Summary</summary>
+                            <p>{{ record.summary }}</p>
+                        </details>
+                    </div>
+                </article>
+            {% endfor %}
+            </div>
+        {% else %}
+            <p class="empty-results">No results found.</p>
+        {% endif %}
+    </main>
+</body>
+</html>
