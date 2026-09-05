@@ -13,8 +13,11 @@ repository naming. They do not implement any of those changes.
 
 ### Implementation status
 
-Phases 1 through 4 were implemented on 2026-08-23. Phase 5, the operational
-repository rename, remains deliberately pending.
+Phases 1 through 4 were implemented on 2026-08-23. Phase 5 was completed on
+2026-09-05: the GitHub repository, project distribution, checkout directory,
+and deployment paths were renamed to `library-semantic-search`, while the
+Python package remained `library_search`. The local `origin` remote uses the
+renamed GitHub URL.
 
 - Phase 1 added offline characterization tests and external-client fakes,
   tested SQLite backup/restore tooling and operator documentation, pinned
@@ -38,7 +41,7 @@ repository rename, remains deliberately pending.
 
 The live service was restarted after migration and returned HTTP 200 through
 the new Gunicorn application-factory configuration. The complete offline gate
-contains 31 passing tests. `ARCHITECTURE.md` describes the current state;
+contains 35 passing tests. `ARCHITECTURE.md` describes the current state;
 `docs/BASELINE.md` remains an intentionally historical pre-refactor snapshot.
 
 ## 2. Scope and non-goals

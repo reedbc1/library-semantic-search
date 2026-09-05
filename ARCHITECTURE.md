@@ -331,8 +331,8 @@ Correct operation assumes:
   loading;
 - one authoritative sync job writes at a time;
 - operators stop Gunicorn and sync jobs before schema maintenance;
-- the systemd and cron wrappers outside the repository continue to point to
-  `/home/reedbc1/Repos/fetchdvds` until the separate Phase 5 rename;
+- the systemd and cron wrappers outside the repository point to
+  `/home/reedbc1/Repos/library-semantic-search`;
 - backups are stored outside Git and retained until a post-migration sync and
   production verification cycle have succeeded.
 
@@ -378,8 +378,10 @@ Correct operation assumes:
 
 - Exact direct dependencies are pinned, but transitive dependencies are not
   locked and there is no CI workflow.
-- The distribution name and checkout directory still use `fetchdvds`; renaming
-  them is Phase 5 and was intentionally excluded from phases 2–4.
+- The distribution and checkout directory are named `library-semantic-search`;
+  the import package intentionally remains `library_search`.
+- The GitHub repository and local `origin` remote use
+  `reedbc1/library-semantic-search`.
 - The migration backup made during Phase 4 is in `/tmp` and is not a durable
   long-term backup location. Operators should copy it to durable storage before
   relying on it for recovery.
@@ -395,5 +397,5 @@ Correct operation assumes:
 - Keep web request handling thin and place search behavior in `search.py`.
 - Keep transaction ownership at operation boundaries and repository methods
   focused on persistence.
-- Update both external host wrappers, systemd/cron references, configuration,
-  and documentation together during the Phase 5 repository rename.
+- Keep both external host wrappers, systemd/cron references, configuration, and
+  documentation aligned if the checkout moves again.

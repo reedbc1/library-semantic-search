@@ -39,10 +39,23 @@ class ProjectConfigurationTests(unittest.TestCase):
 
     def test_supported_python_and_ruff_target_are_consistent(self):
         self.assertEqual(
+            self.configuration["project"]["name"],
+            "library-semantic-search",
+        )
+        self.assertEqual(
             self.configuration["project"]["requires-python"],
             ">=3.13,<3.14",
         )
         self.assertEqual(self.configuration["tool"]["ruff"]["target-version"], "py313")
+
+    def test_distribution_includes_only_the_application_package_and_web_assets(self):
+        setuptools = self.configuration["tool"]["setuptools"]
+
+        self.assertEqual(setuptools["packages"]["find"]["include"], ["library_search*"])
+        self.assertEqual(
+            setuptools["package-data"]["library_search.web"],
+            ["templates/*.html", "static/*.css"],
+        )
 
 
 if __name__ == "__main__":

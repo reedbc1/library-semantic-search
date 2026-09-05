@@ -1,5 +1,5 @@
 [project]
-name = "fetchdvds"
+name = "library-semantic-search"
 version = "0.1.0"
 description = "Semantic search over a locally synchronized library catalog"
 requires-python = ">=3.13,<3.14"
@@ -17,6 +17,12 @@ dependencies = [
 dev = [
     "ruff==0.16.4",
 ]
+
+[tool.setuptools.packages.find]
+include = ["library_search*"]
+
+[tool.setuptools.package-data]
+"library_search.web" = ["templates/*.html", "static/*.css"]
 
 [tool.ruff]
 target-version = "py313"
