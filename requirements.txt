@@ -6,3 +6,4 @@ openai
 python-dotenv
 sqliteai-vector
 flask
+tqdm

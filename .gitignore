@@ -208,3 +208,6 @@ __marimo__/
 
 # Database file (too large)
 items.db
+
+# Local markdown file
+INSTRUCTIONS.md
