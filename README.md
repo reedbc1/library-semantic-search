@@ -253,21 +253,6 @@ vector extension and must not be manually removed.
 
 `items.db`, `.env`, and runtime logs are intentionally ignored by Git.
 
-## Raspberry Pi deployment
-
-The current Raspberry Pi deployment uses two host-level wrappers outside this
-repository:
-
-- `simsearch.service` invokes `/home/reedbc1/scripts/simsearch.sh`, which starts
-  Gunicorn from `/home/reedbc1/Repos/library-semantic-search`.
-- The installed cron entry invokes `/home/reedbc1/scripts/sync_db.sh` at 08:00
-  and 16:00, and that wrapper runs `python -m library_search sync` from the same
-  checkout.
-
-The deployment therefore follows the branch currently checked out in that
-working tree. Restart the service after switching branches or changing loaded
-Python code.
-
 ## Repository layout
 
 ```text
